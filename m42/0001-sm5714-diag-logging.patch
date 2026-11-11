@@ -1,0 +1,61 @@
+--- a/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-12 00:31:05.208945800 +0530
++++ b/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-12 00:31:05.352130300 +0530
+@@ -258,6 +258,9 @@
+ 	cable_type = (reg_val >> SM5714_CABLE_TYPE_SHIFT) ?
+ 			PWR_CABLE : NON_PWR_CABLE;
+ 
++	pr_info("m42diag: %s ON=%d CC_STATUS=0x%02x attach_type=%d cable_type=%d\n",
++		__func__, val, reg_val, attach_type, cable_type);
++
+ 	if (val == USBPD_VCONN_ON) {
+ 		if ((attach_type == SM5714_ATTACH_SINK) && cable_type) {
+ 			reg_data = (reg_val & 0x20) ? 0x1A : 0x19;
+@@ -2695,6 +2698,16 @@
+ 	ret = sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_STATUS, &reg_data);
+ 	if (ret < 0)
+ 		dev_err(dev, "%s, i2c read CC_STATUS error\n", __func__);
++	{
++		u8 m42_cntl5 = 0, m42_cntl3 = 0;
++
++		sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_CNTL5, &m42_cntl5);
++		sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_CNTL3, &m42_cntl3);
++		pr_info("m42diag: attach CC_STATUS=0x%02x type=%d cable=%d CC_CNTL3=0x%02x CC_CNTL5=0x%02x scr_sel=%d\n",
++			reg_data, reg_data & SM5714_ATTACH_TYPE,
++			reg_data >> SM5714_CABLE_TYPE_SHIFT, m42_cntl3, m42_cntl5,
++			pdic_data->scr_sel);
++	}
+ 	pdic_data->is_attached = 1;
+ 	/* cc_SINK */
+ 	if ((reg_data & SM5714_ATTACH_TYPE) == SM5714_ATTACH_SOURCE) {
+@@ -2847,7 +2860,15 @@
+ 		manager->acc_type = PDIC_DOCK_UNSUPPORTED_AUDIO;
+ 		sm5714_usbpd_check_accessory(manager);
+ 	} else {
+-		dev_err(dev, "%s, PLUG Error\n", __func__);
++		u8 m42_cc1 = 0, m42_cc2 = 0, m42_st = 0;
++
++		sm5714_usbpd_write_reg(i2c, SM5714_REG_ADC_CNTL1, SM5714_ADC_PATH_SEL_CC1);
++		sm5714_adc_value_read(pdic_data, &m42_cc1);
++		sm5714_usbpd_write_reg(i2c, SM5714_REG_ADC_CNTL1, SM5714_ADC_PATH_SEL_CC2);
++		sm5714_adc_value_read(pdic_data, &m42_cc2);
++		sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_STATUS, &m42_st);
++		dev_err(dev, "%s, PLUG Error (m42diag: CC_STATUS=0x%02x reread=0x%02x ADC_CC1=0x%02x ADC_CC2=0x%02x)\n",
++			__func__, reg_data, m42_st, m42_cc1, m42_cc2);
+ 		return -1;
+ 	}
+ 
+@@ -2868,6 +2889,14 @@
+ 	struct otg_notify *o_notify = get_otg_notify();
+ #endif
+ 
++	{
++		u8 m42_st = 0, m42_cntl5 = 0;
++
++		sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_STATUS, &m42_st);
++		sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_CNTL5, &m42_cntl5);
++		pr_info("m42diag: detach CC_STATUS=0x%02x CC_CNTL5=0x%02x vconn=%d power_role=%d\n",
++			m42_st, m42_cntl5, pdic_data->vconn_source, pdic_data->power_role);
++	}
+ 	dev_info(dev, "ccstat : cc_No_Connection\n");
+ 	sm5714_vbus_turn_on_ctrl(pdic_data, 0);
+ 	pdic_data->is_attached = 0;

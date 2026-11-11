@@ -1,0 +1,91 @@
+name: m42-kernel
+
+# Builds the a42xq/M42 LineageOS kernel (TARKZiM lineage-24.0) with the exact
+# config of the running kernel (m42/running.config), as two variants:
+#   baseline - source tree as-is (proves the pipeline reproduces a bootable kernel)
+#   patched  - source tree + every m42/*.patch, applied in name order
+# Output: raw arch/arm64/boot/Image per variant. Repacking into boot.img is done
+# locally over the phone's own boot.img (keeps LineageOS ramdisk, dtb, cmdline).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [m42-usb]
+    paths: ['m42/**', '.github/workflows/m42-kernel.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, patched]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev cpio \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            gcc-arm-linux-gnueabi python3
+
+      - name: Fetch clang r416183b (clang 12.0.5, same as the running kernel)
+        run: |
+          mkdir -p "$HOME/clang"
+          curl -fsSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz" \
+            | tar -xz -C "$HOME/clang"
+          "$HOME/clang/bin/clang" --version | head -1
+
+      - name: Apply m42 patches
+        if: matrix.variant == 'patched'
+        run: |
+          for p in $(ls m42/*.patch | sort); do
+            echo "== $p"; patch -p1 --forward < "$p"
+          done
+
+      - name: Configure
+        run: |
+          mkdir -p out
+          cp m42/running.config out/.config
+          export PATH="$HOME/clang/bin:$PATH"
+          make O=out ARCH=arm64 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            olddefconfig
+          echo "== config changes made by olddefconfig (should be none)"
+          diff <(grep -v '^#' m42/running.config | grep . | sort) \
+               <(grep -v '^#' out/.config | grep . | sort) || true
+
+      - name: Build Image
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            KBUILD_BUILD_USER=m42 KBUILD_BUILD_HOST=github \
+            Image 2>&1 | tee build.log | grep -E "error|warning: .*sm5714" || true
+          test -f out/arch/arm64/boot/Image
+          ls -l out/arch/arm64/boot/Image
+
+      - name: Check embedded config matches the running kernel
+        run: |
+          ./scripts/extract-ikconfig out/arch/arm64/boot/Image > built.config
+          diff <(grep -v '^#' m42/running.config | grep . | sort) \
+               <(grep -v '^#' built.config | grep . | sort) > config.diff || true
+          echo "== embedded config diff vs running kernel:"; cat config.diff
+          strings out/arch/arm64/boot/Image | grep -m1 "Linux version"
+          if [ "${{ matrix.variant }}" = patched ]; then
+            strings out/arch/arm64/boot/Image | grep -c m42diag
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Image-${{ matrix.variant }}
+          path: |
+            out/arch/arm64/boot/Image
+            config.diff
+            build.log
+          retention-days: 30
