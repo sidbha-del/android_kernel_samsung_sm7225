@@ -17,9 +17,9 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     env:
-      # The running kernel was built with the Wi-Fi driver's debug features off,
-      # which qcacld-3.0 ties to TARGET_BUILD_VARIANT=user.
-      TARGET_BUILD_VARIANT: user
+      # Matches the running kernel: qcacld-3.0 keys pktlog/crash-inject (present
+      # in it) and PANIC_ON_BUG (absent) off TARGET_BUILD_VARIANT=userdebug.
+      TARGET_BUILD_VARIANT: userdebug
     strategy:
       fail-fast: false
       matrix:
