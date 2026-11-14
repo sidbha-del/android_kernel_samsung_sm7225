@@ -1,19 +1,41 @@
---- a/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 21:27:40.943463900 +0530
-+++ b/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 21:27:41.093877000 +0530
-@@ -34,6 +34,12 @@
+--- a/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 22:52:26.383941800 +0530
++++ b/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 22:52:26.568047700 +0530
+@@ -34,6 +34,13 @@
  static int m42_src_rp;
  module_param(m42_src_rp, int, 0644);
  MODULE_PARM_DESC(m42_src_rp, "m42: Rp on source attach: 0 keep, 1 default(80uA), 2 1.5A(180uA), 3 3A(330uA)");
-+/* m42: experiment. On a DETACH irq while we are source, keep VBUS and re-check CC for up to
-+ * this many ms before treating it as a real detach (0 = stock behaviour). */
++/* m42: experiment. On a DETACH irq while we are source, keep VBUS, pin the chip to source-only
++ * and re-check CC for up to this many ms before treating it as a real detach (0 = stock). */
 +static int m42_src_hold_ms;
 +module_param(m42_src_hold_ms, int, 0644);
 +MODULE_PARM_DESC(m42_src_hold_ms, "m42: ms to hold VBUS and re-check CC on a source-role detach (0 off)");
 +static bool m42_glitch_pending;
++static bool m42_src_only;
  #include <linux/completion.h>
  #include <linux/version.h>
  #if defined(CONFIG_BATTERY_SAMSUNG)
-@@ -3119,6 +3125,18 @@
+@@ -3067,6 +3074,20 @@
+ 	return true;
+ }
+ 
++/* m42: CC_CNTL1 bits 3:2 select the role mode: 00 dual-role, 01 sink-only, 10 source-only */
++static void m42_set_src_only(struct i2c_client *i2c, bool on)
++{
++	u8 v = 0;
++
++	sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_CNTL1, &v);
++	v &= ~0x0C;
++	if (on)
++		v |= 0x08;
++	sm5714_usbpd_write_reg(i2c, SM5714_REG_CC_CNTL1, v);
++	m42_src_only = on;
++	pr_info("m42diag: role mode %s (CC_CNTL1=0x%02x)\n", on ? "source-only" : "dual-role", v);
++}
++
+ static irqreturn_t sm5714_pdic_irq_thread(int irq, void *data)
+ {
+ 	struct sm5714_phydrv_data *pdic_data = data;
+@@ -3119,6 +3140,20 @@
  
  	if (sm5714_get_status(pd_data, PLUG_ATTACH)) {
  		pr_info("%s PLUG_ATTACHED +++\n", __func__);
@@ -27,12 +49,14 @@
 +				goto out;
 +			}
 +			pr_info("m42diag: held detach then different attach (CC_STATUS=0x%02x), real detach first\n", m42_cc);
++			if (m42_src_only)
++				m42_set_src_only(i2c, false);
 +			sm5714_usbpd_notify_detach(pdic_data);
 +		}
  		rid_status = sm5714_get_status(pd_data, MSG_RID);
  		ret = sm5714_usbpd_notify_attach(pdic_data);
  		if (ret >= 0) {
-@@ -3130,6 +3148,26 @@
+@@ -3130,6 +3165,30 @@
  
  	if (sm5714_get_status(pd_data, PLUG_DETACH)) {
  		pr_info("%s PLUG_DETACHED ---\n", __func__);
@@ -42,6 +66,8 @@
 +			int m42_t = 0;
 +			u8 m42_cc = 0;
 +
++			if (!m42_src_only)
++				m42_set_src_only(i2c, true);
 +			while (m42_t < m42_src_hold_ms) {
 +				msleep(10);
 +				m42_t += 10;
@@ -56,6 +82,8 @@
 +			}
 +			pr_info("m42diag: source detach confirmed after %d ms hold (CC_STATUS=0x%02x)\n", m42_t, m42_cc);
 +		}
++		if (m42_src_only)
++			m42_set_src_only(i2c, false);
  #if defined(CONFIG_SEC_FACTORY)
  			sm5714_factory_execute_monitor(pdic_data,
  					FAC_ABNORMAL_REPEAT_STATE);
