@@ -1,0 +1,61 @@
+--- a/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 21:27:40.943463900 +0530
++++ b/drivers/usb/typec/sm/sm5714/sm5714_typec.c	2026-11-14 21:27:41.093877000 +0530
+@@ -34,6 +34,12 @@
+ static int m42_src_rp;
+ module_param(m42_src_rp, int, 0644);
+ MODULE_PARM_DESC(m42_src_rp, "m42: Rp on source attach: 0 keep, 1 default(80uA), 2 1.5A(180uA), 3 3A(330uA)");
++/* m42: experiment. On a DETACH irq while we are source, keep VBUS and re-check CC for up to
++ * this many ms before treating it as a real detach (0 = stock behaviour). */
++static int m42_src_hold_ms;
++module_param(m42_src_hold_ms, int, 0644);
++MODULE_PARM_DESC(m42_src_hold_ms, "m42: ms to hold VBUS and re-check CC on a source-role detach (0 off)");
++static bool m42_glitch_pending;
+ #include <linux/completion.h>
+ #include <linux/version.h>
+ #if defined(CONFIG_BATTERY_SAMSUNG)
+@@ -3119,6 +3125,18 @@
+ 
+ 	if (sm5714_get_status(pd_data, PLUG_ATTACH)) {
+ 		pr_info("%s PLUG_ATTACHED +++\n", __func__);
++		if (m42_glitch_pending) {
++			u8 m42_cc = 0;
++
++			m42_glitch_pending = false;
++			sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_STATUS, &m42_cc);
++			if ((m42_cc & SM5714_ATTACH_TYPE) == SM5714_ATTACH_SINK) {
++				pr_info("m42diag: re-attach after held detach, session kept (CC_STATUS=0x%02x)\n", m42_cc);
++				goto out;
++			}
++			pr_info("m42diag: held detach then different attach (CC_STATUS=0x%02x), real detach first\n", m42_cc);
++			sm5714_usbpd_notify_detach(pdic_data);
++		}
+ 		rid_status = sm5714_get_status(pd_data, MSG_RID);
+ 		ret = sm5714_usbpd_notify_attach(pdic_data);
+ 		if (ret >= 0) {
+@@ -3130,6 +3148,26 @@
+ 
+ 	if (sm5714_get_status(pd_data, PLUG_DETACH)) {
+ 		pr_info("%s PLUG_DETACHED ---\n", __func__);
++		if (m42_glitch_pending) {
++			m42_glitch_pending = false;
++		} else if (m42_src_hold_ms > 0 && pdic_data->power_role == PDIC_SOURCE) {
++			int m42_t = 0;
++			u8 m42_cc = 0;
++
++			while (m42_t < m42_src_hold_ms) {
++				msleep(10);
++				m42_t += 10;
++				sm5714_usbpd_read_reg(i2c, SM5714_REG_CC_STATUS, &m42_cc);
++				if ((m42_cc & SM5714_ATTACH_TYPE) == SM5714_ATTACH_SINK)
++					break;
++			}
++			if ((m42_cc & SM5714_ATTACH_TYPE) == SM5714_ATTACH_SINK) {
++				pr_info("m42diag: source detach was a glitch, CC back after %d ms, VBUS kept\n", m42_t);
++				m42_glitch_pending = true;
++				goto out;
++			}
++			pr_info("m42diag: source detach confirmed after %d ms hold (CC_STATUS=0x%02x)\n", m42_t, m42_cc);
++		}
+ #if defined(CONFIG_SEC_FACTORY)
+ 			sm5714_factory_execute_monitor(pdic_data,
+ 					FAC_ABNORMAL_REPEAT_STATE);
