@@ -1,0 +1,12 @@
+--- a/drivers/usb/typec/sm/sm5714/sm5714_typec.c
++++ b/drivers/usb/typec/sm/sm5714/sm5714_typec.c
+@@ -24,6 +24,7 @@
+ #include <linux/moduleparam.h>
+
+-/* m42: runtime experiment toggles, defaults = stock LineageOS behaviour */
+-static bool m42_no_pd_src;
++/* m42: runtime toggles. no_pd_src defaults ON: the SM5714 PD source handshake makes
++ * the Audiocular C18 detach after ~0.8 s (tested 2026-11-14); the others stay stock. */
++static bool m42_no_pd_src = true;
+ module_param(m42_no_pd_src, bool, 0644);
+ MODULE_PARM_DESC(m42_no_pd_src, "m42: no USB PD (no Source_Capabilities) when phone is source");
